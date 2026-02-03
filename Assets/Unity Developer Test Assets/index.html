@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>People Loop HTML5 Prototype</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #87CEEB; font-family: sans-serif; }
+        #loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            font-size: 24px; color: white; font-weight: bold; pointer-events: none;
+        }
+        #ui {
+            position: absolute; bottom: 20px; width: 100%; text-align: center;
+            pointer-events: none;
+        }
+        .guide {
+            background: rgba(0,0,0,0.5); color: white; padding: 10px 20px; 
+            border-radius: 20px; display: inline-block;
+        }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="loading">Đang tải Assets...</div>
+    <div id="ui"><div class="guide">Click vào hàng lính để bắt đầu chạy!</div></div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+
+        // --- CẤU HÌNH ---
+        const CONFIG = {
+            lanePos: { x: -3, z: 5 }, // Vị trí hàng chờ
+            mapCenter: { x: 0, z: -5 }, // Tâm vòng lặp
+            sideLength: 6, // Kích thước cạnh vòng lặp
+            spacing: 2.0, // Khoảng cách miếng đường
+            scale: 0.01, // Tùy chỉnh nếu model FBX quá to/nhỏ (Unity thường to gấp 100 lần)
+            minionCount: 15,
+            speed: 5.0
+        };
+
+        // --- KHỞI TẠO THREE.JS ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87CEEB); // Màu trời
+        scene.fog = new THREE.Fog(0x87CEEB, 10, 50);
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 15, 15);
+        
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // Ánh sáng
+        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1.0);
+        scene.add(hemiLight);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        dirLight.position.set(10, 20, 10);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+
+        // Controls (để xoay camera xem map)
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.target.set(0, 0, -5);
+        controls.update();
+
+        // Raycaster để click chuột
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        // --- LOAD ASSETS ---
+        const assets = {};
+        const loader = new FBXLoader();
+        const loadAsset = (name, url) => {
+            return new Promise((resolve) => {
+                loader.load(url, (object) => {
+                    // Chuẩn hóa model
+                    object.scale.setScalar(CONFIG.scale); 
+                    object.traverse(child => {
+                        if (child.isMesh) {
+                            child.castShadow = true;
+                            child.receiveShadow = true;
+                        }
+                    });
+                    assets[name] = object;
+                    console.log(`Loaded ${name}`);
+                    resolve();
+                }, undefined, (error) => console.error(error));
+            });
+        };
+
+        Promise.all([
+            loadAsset('Road', './Road.fbx'),
+            loadAsset('Minion', './Minion.fbx'),
+            loadAsset('WaitingArea', './WaitingArea.fbx'),
+            loadAsset('Hole', './Hole.fbx')
+        ]).then(() => {
+            document.getElementById('loading').style.display = 'none';
+            initGame();
+        });
+
+        // --- GAME LOGIC ---
+        const pathPoints = []; // Mảng chứa toạ độ đường đi
+        const minions = [];    // Mảng chứa lính
+        const clickTargets = []; // Các vật thể nhận click chuột
+
+        function initGame() {
+            buildMap();
+            buildLane();
+            spawnMinions();
+            
+            // Xử lý Click
+            window.addEventListener('mousedown', onMouseDown);
+            // Game Loop
+            animate();
+        }
+
+        // 1. Xây Map Chính (Vòng lặp hình vuông)
+        function buildMap() {
+            const startPos = new THREE.Vector3(CONFIG.mapCenter.x - (CONFIG.sideLength*CONFIG.spacing)/2, 0, CONFIG.mapCenter.z + (CONFIG.sideLength*CONFIG.spacing)/2);
+            let currentPos = startPos.clone();
+            let direction = new THREE.Vector3(1, 0, 0); // Hướng phải
+            
+            // Logic xây 4 cạnh (giống code C#)
+            for(let i=0; i<4; i++) {
+                for(let j=0; j<CONFIG.sideLength; j++) {
+                    const road = assets['Road'].clone();
+                    road.position.copy(currentPos);
+                    // Xoay đường theo hướng
+                    const angle = Math.atan2(direction.x, direction.z);
+                    road.rotation.y = angle + Math.PI/2; // Tinh chỉnh xoay tuỳ model gốc
+                    scene.add(road);
+
+                    // Lưu điểm chạy (Path)
+                    pathPoints.push(currentPos.clone().add(new THREE.Vector3(0, 0.5, 0)));
+                    
+                    currentPos.add(direction.clone().multiplyScalar(CONFIG.spacing));
+                }
+                // Đổi hướng 90 độ
+                const tempX = direction.x;
+                direction.x = direction.z;
+                direction.z = -tempX;
+            }
+
+            // Đặt cái Hố (Hole) ngẫu nhiên trên đường
+            const hole = assets['Hole'].clone();
+            hole.position.copy(pathPoints[Math.floor(pathPoints.length/2)]);
+            hole.position.y += 0.1;
+            scene.add(hole);
+            
+            // Lưu vị trí hố để check va chạm
+            window.holePosition = hole.position;
+        }
+
+        // 2. Xây Đường Chờ (Lane)
+        function buildLane() {
+            let pos = new THREE.Vector3(CONFIG.lanePos.x, 0, CONFIG.lanePos.z);
+            const dir = new THREE.Vector3(0, 0, -1); // Hướng về phía map chính
+            
+            const lanePath = [];
+            const laneContainer = new THREE.Group(); // Gom nhóm để dễ click
+
+            for(let i=0; i<4; i++) {
+                const wait = assets['WaitingArea'].clone();
+                wait.position.copy(pos);
+                scene.add(wait);
+                
+                // Lưu điểm chạy lane
+                lanePath.push(pos.clone().add(new THREE.Vector3(0, 0.5, 0)));
+                
+                pos.add(dir.clone().multiplyScalar(CONFIG.spacing));
+            }
+            
+            // Tạo một collider vô hình bao quanh lane để dễ click
+            const geometry = new THREE.BoxGeometry(3, 1, 10);
+            const material = new THREE.MeshBasicMaterial({ visible: false });
+            const clickBox = new THREE.Mesh(geometry, material);
+            clickBox.position.set(CONFIG.lanePos.x, 0.5, CONFIG.lanePos.z - 2);
+            clickBox.userData = { isLane: true, path: connectPath(lanePath) }; // Lưu đường chạy vào data
+            scene.add(clickBox);
+            clickTargets.push(clickBox);
+        }
+
+        // Hàm nối đường Lane vào đường Map chính
+        function connectPath(lanePath) {
+            // Copy đường lane
+            let fullPath = [...lanePath];
+            // Tìm điểm gần nhất trên map chính
+            let endOfLane = lanePath[lanePath.length-1];
+            let closestDist = Infinity;
+            let startIndex = 0;
+
+            pathPoints.forEach((p, index) => {
+                const d = p.distanceTo(endOfLane);
+                if(d < closestDist) { closestDist = d; startIndex = index; }
+            });
+
+            // Nối mảng (từ điểm gần nhất -> hết mảng -> từ đầu -> điểm gần nhất)
+            for(let i=startIndex; i<pathPoints.length; i++) fullPath.push(pathPoints[i]);
+            for(let i=0; i<startIndex; i++) fullPath.push(pathPoints[i]);
+            
+            return fullPath;
+        }
+
+        // 3. Sinh Lính (Minions)
+        function spawnMinions() {
+            const startPos = new THREE.Vector3(CONFIG.lanePos.x, 0.5, CONFIG.lanePos.z);
+            
+            for(let i=0; i<CONFIG.minionCount; i++) {
+                const m = assets['Minion'].clone();
+                
+                // Xếp hàng 3 người
+                const row = Math.floor(i / 3);
+                const col = i % 3;
+                const offset = new THREE.Vector3((col-1)*0.5, 0, -row*0.5);
+                
+                m.position.copy(startPos).add(offset);
+                
+                // Gán thuộc tính để điều khiển
+                m.userData = {
+                    state: 'IDLE',
+                    path: null,
+                    pathIndex: 0,
+                    speed: CONFIG.speed + (Math.random() * 0.5) // Tốc độ lệch nhau xíu cho tự nhiên
+                };
+
+                // Đổi màu (Nếu mesh cho phép)
+                m.traverse(c => {
+                    if(c.isMesh) c.material = c.material.clone(); // Clone material để đổi màu riêng
+                    if(c.isMesh) c.material.color.setHex(0x0000FF);
+                });
+
+                scene.add(m);
+                minions.push(m);
+            }
+        }
+
+        // --- XỬ LÝ SỰ KIỆN ---
+        function onMouseDown(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+
+            const intersects = raycaster.intersectObjects(clickTargets);
+            if(intersects.length > 0) {
+                const target = intersects[0].object;
+                if(target.userData.isLane) {
+                    releaseMinions(target.userData.path);
+                }
+            }
+        }
+
+        function releaseMinions(fullPath) {
+            let delay = 0;
+            minions.forEach(m => {
+                if(m.userData.state === 'IDLE') {
+                    setTimeout(() => {
+                        m.userData.state = 'RUNNING';
+                        m.userData.path = fullPath;
+                        m.userData.pathIndex = 0;
+                        
+                        // Hiệu ứng nhảy lên đường (dịch chuyển tức thời đến điểm đầu path)
+                        // Trong game thực tế sẽ dùng lerp
+                    }, delay);
+                    delay += 100; // Mỗi 0.1s thả 1 con
+                }
+            });
+        }
+
+        // --- VÒNG LẶP RENDER ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const dt = 0.016; // Giả lập delta time
+
+            // Update Minions logic
+            minions.forEach((m, index) => {
+                if(m.userData.state === 'RUNNING') {
+                    const target = m.userData.path[m.userData.pathIndex];
+                    const dir = new THREE.Vector3().subVectors(target, m.position);
+                    const dist = dir.length();
+                    
+                    if(dist < 0.1) {
+                        // Đến điểm tiếp theo
+                        m.userData.pathIndex++;
+                        if(m.userData.pathIndex >= m.userData.path.length) {
+                            m.userData.pathIndex = 0; // Loop lại (nếu chạy hết map)
+                            // Hoặc check logic vào lại vòng lặp
+                            // Ở đây ta đơn giản hoá là loop từ đầu path (không chuẩn lắm với map tròn nhưng chạy được)
+                            // Để chuẩn: Path loop phải được cấu hình riêng.
+                        }
+                    } else {
+                        // Di chuyển
+                        dir.normalize();
+                        m.position.add(dir.multiplyScalar(m.userData.speed * dt));
+                        m.lookAt(target); // Xoay mặt theo hướng đi
+                    }
+
+                    // Check va chạm Hố
+                    if(window.holePosition && m.position.distanceTo(window.holePosition) < 1.0) {
+                        // Rơi xuống hố
+                        scene.remove(m);
+                        m.userData.state = 'DEAD';
+                        console.log("Minion +1 Score");
+                    }
+                }
+            });
+
+            renderer.render(scene, camera);
+        }
+
+        // Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+    </script>
+</body>
+</html>
