@@ -31,3 +31,6 @@
     -	Visual Feedback Loop & Closure:
         •	Cơ chế GateController (giảm số -> biến mất) tạo ra cảm giác Sense of Completion/Closure. Đây là một Positive Feedback Loop mạnh mẽ, thưởng cho não bộ dopamine mỗi khi một tác vụ (Task) được hoàn thành triệt để (Clean up).
 
+
+https://github.com/user-attachments/assets/99865594-5732-4c5f-bae4-03df3283b99f
+
